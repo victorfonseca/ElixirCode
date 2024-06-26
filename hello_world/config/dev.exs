@@ -3,8 +3,8 @@ import Config
 # Configure your database
 config :hello_world, HelloWorld.Repo,
   username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
+  password: "vscode",
+  hostname: "172.23.0.1",
   database: "hello_world_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
