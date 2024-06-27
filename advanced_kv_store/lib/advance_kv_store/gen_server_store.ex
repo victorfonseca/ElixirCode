@@ -26,12 +26,16 @@ defmodule AdvancedKvStore.GenServerStore do
 
   @impl true
   def handle_cast({:set, key, value}, state) do
-    {:noreply, Map.put(state, key, value)}
+    new_state = Map.put(state, key, value)
+    IO.puts("New key added: #{key}")
+    {:noreply, new_state}
   end
 
   @impl true
   def handle_cast({:delete, key}, state) do
-    {:noreply, Map.delete(state, key)}
+    new_state = Map.delete(state, key)
+    IO.puts("The key has been deleted: #{key}")
+    {:noreply, new_state}
   end
 
   @impl true
