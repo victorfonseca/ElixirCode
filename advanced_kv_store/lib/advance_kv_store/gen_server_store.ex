@@ -38,7 +38,7 @@ defmodule AdvancedKvStore.GenServerStore do
   @impl true
   def init(:ok) do
     Logger.debug("GenServerStore initialized")
-    {:ok, %{}}
+    {:ok, %{data: %{}, timers: %{}}}
   end
 
   @impl true
@@ -46,11 +46,17 @@ defmodule AdvancedKvStore.GenServerStore do
     Logger.debug("Setting #{inspect(key)} to #{inspect(value)} with TTL #{inspect(ttl)}")
 
     expiry = calculate_expiry(ttl)
-    new_state = Map.put(state, key, {value, expiry})
+    new_data = Map.put(state.data, key, {value, expiry})
 
-    if ttl != :infinity do
-      Process.send_after(self(), {:check_expiry, key}, ttl)
-    end
+    timer_ref =
+      if ttl != :infinity do
+        Process.send_after(self(), {:check_expiry, key}, ttl)
+      else
+        nil
+      end
+
+    new_timers = Map.put(state.timers, key, timer_ref)
+    new_state = %{state | data: new_data, timers: new_timers}
 
     Logger.debug("New state: #{inspect(new_state)}")
     {:reply, :ok, new_state}
@@ -60,28 +66,50 @@ defmodule AdvancedKvStore.GenServerStore do
   def handle_call({:update_ttl, key, new_ttl}, _from, state) do
     Logger.debug("Updating TTL for #{inspect(key)} to #{inspect(new_ttl)}")
 
-    case Map.get(state, key) do
+    case Map.get(state.data, key) do
       nil ->
         Logger.debug("#{inspect(key)} not found")
         {:reply, {:error, :not_found}, state}
 
-      {value, _old_expiry} ->
-        new_expiry = calculate_expiry(new_ttl)
-        new_state = Map.put(state, key, {value, new_expiry})
+      {value, old_expiry} ->
+        current_time = System.system_time(:millisecond)
+        if old_expiry != :infinity and old_expiry <= current_time do
+          Logger.debug("#{inspect(key)} has already expired")
+          new_data = Map.delete(state.data, key)
+          new_timers = Map.delete(state.timers, key)
+          new_state = %{state | data: new_data, timers: new_timers}
+          {:reply, {:error, :expired}, new_state}
+        else
+          new_expiry = calculate_expiry(new_ttl)
+          new_data = Map.put(state.data, key, {value, new_expiry})
 
-        if new_ttl != :infinity do
-          Process.send_after(self(), {:check_expiry, key}, new_ttl)
+          # Cancel the existing timer if there is one
+          if old_expiry != :infinity do
+            Process.cancel_timer(Map.get(state.timers, key, nil))
+          end
+
+          # Set a new timer if the new TTL is not :infinity
+          new_timer =
+            if new_ttl != :infinity do
+              Process.send_after(self(), {:check_expiry, key}, new_ttl)
+            else
+              nil
+            end
+
+          # Update the timers map
+          new_timers = Map.put(state.timers, key, new_timer)
+          new_state = %{state | data: new_data, timers: new_timers}
+
+          Logger.debug("New TTL: #{inspect(new_expiry)}")
+          {:reply, :ok, new_state}
         end
-
-        Logger.debug("New TTL: #{inspect(new_expiry)}")
-        {:reply, :ok, new_state}
     end
   end
 
   @impl true
   def handle_call({:get, key}, _from, state) do
     Logger.debug("Getting #{inspect(key)}")
-    case Map.get(state, key) do
+    case Map.get(state.data, key) do
       nil ->
         Logger.debug("#{inspect(key)} not found")
         {:reply, nil, state}
@@ -92,7 +120,9 @@ defmodule AdvancedKvStore.GenServerStore do
           {:reply, value, state}
         else
           Logger.debug("#{inspect(key)} expired")
-          new_state = Map.delete(state, key)
+          new_data = Map.delete(state.data, key)
+          new_timers = Map.delete(state.timers, key)
+          new_state = %{state | data: new_data, timers: new_timers}
           {:reply, nil, new_state}
         end
     end
@@ -101,20 +131,23 @@ defmodule AdvancedKvStore.GenServerStore do
   @impl true
   def handle_call({:delete, key}, _from, state) do
     Logger.debug("Deleting #{inspect(key)}")
-    {:reply, :ok, Map.delete(state, key)}
+    new_data = Map.delete(state.data, key)
+    new_timers = Map.delete(state.timers, key)
+    new_state = %{state | data: new_data, timers: new_timers}
+    {:reply, :ok, new_state}
   end
 
   @impl true
   def handle_call(:list_keys, _from, state) do
     Logger.debug("Listing all keys")
-    keys = Map.keys(state)
+    keys = Map.keys(state.data)
     {:reply, keys, state}
   end
 
   @impl true
   def handle_call(:list_values, _from, state) do
     Logger.debug("Listing all values")
-    values = state
+    values = state.data
     |> Map.values()
     |> Enum.map(fn {value, expiry} ->
       current_time = System.system_time(:millisecond)
@@ -131,7 +164,7 @@ defmodule AdvancedKvStore.GenServerStore do
   @impl true
   def handle_info({:check_expiry, key}, state) do
     Logger.debug("Checking expiry for #{inspect(key)}")
-    case Map.get(state, key) do
+    case Map.get(state.data, key) do
       nil ->
         Logger.debug("#{inspect(key)} not found")
         {:noreply, state}
@@ -140,11 +173,16 @@ defmodule AdvancedKvStore.GenServerStore do
         if expiry == :infinity or expiry > current_time do
           Logger.debug("#{inspect(key)} not expired yet")
           time_left = max(0, expiry - current_time)
-          Process.send_after(self(), {:check_expiry, key}, time_left)
-          {:noreply, state}
+          new_timer = Process.send_after(self(), {:check_expiry, key}, time_left)
+          new_timers = Map.put(state.timers, key, new_timer)
+          new_state = %{state | timers: new_timers}
+          {:noreply, new_state}
         else
           Logger.debug("#{inspect(key)} expired and removed")
-          {:noreply, Map.delete(state, key)}
+          new_data = Map.delete(state.data, key)
+          new_timers = Map.delete(state.timers, key)
+          new_state = %{state | data: new_data, timers: new_timers}
+          {:noreply, new_state}
         end
     end
   end
