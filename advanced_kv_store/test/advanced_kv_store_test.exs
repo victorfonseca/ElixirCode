@@ -5,9 +5,7 @@ defmodule AdvancedKvStore.GenServerStoreTest do
   @moduletag :capture_log
 
   setup do
-    # Start a new GenServerStore for each test
     {:ok, pid} = GenServerStore.start_link()
-    # Ensure we start with a clean state
     GenServerStore.reset_state(pid)
     %{pid: pid}
   end
@@ -99,6 +97,89 @@ defmodule AdvancedKvStore.GenServerStoreTest do
 
     test "delete non-existent key", %{pid: pid} do
       assert :ok = GenServerStore.delete(pid, "non_existent")
+    end
+  end
+
+  describe "edge cases" do
+    test "set and get with empty string key", %{pid: pid} do
+      assert :ok = GenServerStore.set(pid, "", "empty key value")
+      assert "empty key value" = GenServerStore.get(pid, "")
+    end
+
+    test "set and get with very long key", %{pid: pid} do
+      long_key = String.duplicate("a", 1000)
+      assert :ok = GenServerStore.set(pid, long_key, "long key value")
+      assert "long key value" = GenServerStore.get(pid, long_key)
+    end
+
+    test "set with very short TTL", %{pid: pid} do
+      GenServerStore.set(pid, "short_ttl", "value", 1)
+      :timer.sleep(10)
+      assert nil == GenServerStore.get(pid, "short_ttl")
+    end
+  end
+
+  describe "stress tests" do
+    test "large number of operations", %{pid: pid} do
+      for i <- 1..10_000 do
+        assert :ok = GenServerStore.set(pid, "key#{i}", "value#{i}")
+      end
+
+      for i <- 1..10_000 do
+        expected_value = "value#{i}"
+        assert ^expected_value = GenServerStore.get(pid, "key#{i}")
+      end
+
+      assert 10_000 == length(GenServerStore.list_keys(pid))
+    end
+
+    test "rapid TTL updates", %{pid: pid} do
+      GenServerStore.set(pid, "rapid_ttl", "initial", 10_000)
+
+      for _ <- 1..1000 do
+        new_ttl = :rand.uniform(10_000)
+        GenServerStore.update_ttl(pid, "rapid_ttl", new_ttl)
+      end
+
+      assert "initial" = GenServerStore.get(pid, "rapid_ttl")
+    end
+  end
+
+  describe "batch operations" do
+    test "perform multiple operations in a single call", %{pid: pid} do
+      operations = [
+        {:set, "batch_key1", "value1", :infinity},
+        {:set, "batch_key2", "value2", 60000},
+        {:get, "batch_key1"},
+        {:delete, "batch_key1"},
+        {:get, "batch_key1"},
+        {:get, "batch_key2"}
+      ]
+
+      results = GenServerStore.batch(pid, operations)
+
+      assert results == [:ok, :ok, "value1", :ok, nil, "value2"]
+    end
+
+    test "batch operations with TTL", %{pid: pid} do
+      operations = [
+        {:set, "ttl_key1", "value1", 100},
+        {:set, "ttl_key2", "value2", :infinity},
+        {:get, "ttl_key1"},
+        {:get, "ttl_key2"}
+      ]
+
+      results = GenServerStore.batch(pid, operations)
+      assert results == [:ok, :ok, "value1", "value2"]
+
+      :timer.sleep(150)
+
+      results = GenServerStore.batch(pid, [
+        {:get, "ttl_key1"},
+        {:get, "ttl_key2"}
+      ])
+
+      assert results == [nil, "value2"]
     end
   end
 end
