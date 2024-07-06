@@ -256,13 +256,20 @@ defmodule AdvancedKvStore.GenServerStore do
         Logger.debug("#{inspect(key)} not found")
         {:reply, nil, state}
 
+      {_value, :expired} ->
+        Logger.debug("#{inspect(key)} expired")
+        new_data = Map.delete(state.data, key)
+        new_timers = Map.delete(state.timers, key)
+        new_state = %{state | data: new_data, timers: new_timers}
+        {:reply, nil, new_state}
+
       {value, expiry} ->
         if expiry == :infinity or expiry > current_time() do
           Logger.debug("#{inspect(key)} found with value #{inspect(value)}")
           {:reply, value, state}
         else
           Logger.debug("#{inspect(key)} expired")
-          new_data = Map.delete(state.data, key)
+          new_data = Map.put(state.data, key, {value, :expired})
           new_timers = Map.delete(state.timers, key)
           new_state = %{state | data: new_data, timers: new_timers}
           {:reply, nil, new_state}
@@ -273,21 +280,15 @@ defmodule AdvancedKvStore.GenServerStore do
   @impl true
   def handle_call(:clear_expired, _from, state) do
     {expired, valid} = Enum.split_with(state.data, fn {_key, {_value, expiry}} ->
-      expiry != :infinity and expiry <= current_time()
+      expiry == :expired
     end)
 
     new_data = Map.new(valid)
-
     expired_keys = Enum.map(expired, fn {key, _} -> key end)
-    new_timers = Map.drop(state.timers, expired_keys)
 
-    Enum.each(expired_keys, fn key ->
-      Logger.debug("Expired key removed: #{inspect(key)}")
-      timer_ref = Map.get(state.timers, key)
-      if timer_ref, do: Process.cancel_timer(timer_ref)
-    end)
+    Logger.debug("Cleared expired keys: #{inspect(expired_keys)}")
 
-    new_state = %{state | data: new_data, timers: new_timers}
+    new_state = %{state | data: new_data}
     save_state(new_state)
 
     {:reply, length(expired_keys), new_state}
@@ -329,7 +330,7 @@ defmodule AdvancedKvStore.GenServerStore do
         Logger.debug("#{inspect(key)} not found")
         {:noreply, state}
 
-      {_value, expiry} ->
+      {value, expiry} ->
         if expiry == :infinity or expiry > current_time() do
           Logger.debug("#{inspect(key)} not expired yet")
           time_left = max(0, expiry - current_time())
@@ -338,8 +339,8 @@ defmodule AdvancedKvStore.GenServerStore do
           new_state = %{state | timers: new_timers}
           {:noreply, new_state}
         else
-          Logger.debug("#{inspect(key)} expired and removed")
-          new_data = Map.delete(state.data, key)
+          Logger.debug("#{inspect(key)} expired")
+          new_data = Map.put(state.data, key, {value, :expired})
           new_timers = Map.delete(state.timers, key)
           new_state = %{state | data: new_data, timers: new_timers}
           {:noreply, new_state}
