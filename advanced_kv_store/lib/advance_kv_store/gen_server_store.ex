@@ -4,6 +4,15 @@ defmodule AdvancedKvStore.GenServerStore do
 
   This module provides a key-value store that allows setting, getting, and deleting keys with optional TTL.
   The state is periodically saved to disk for persistence.
+
+  Features:
+  - Set and get key-value pairs
+  - Optional TTL (Time-To-Live) for entries
+  - Persistence to disk
+  - Batch operations
+  - Pub/Sub mechanism for key updates
+  - Support for nested data structures
+  - Automatic clearing of expired keys
   """
 
   use GenServer
@@ -236,6 +245,7 @@ defmodule AdvancedKvStore.GenServerStore do
     schedule_save()
     {:ok, Map.put(state, :persistence_file, @default_persistence_file)}
   end
+
 
   @impl true
   def handle_call(:get_persistence_file, _from, state) do
