@@ -182,4 +182,76 @@ defmodule AdvancedKvStore.GenServerStoreTest do
       assert results == [nil, "value2"]
     end
   end
+
+  describe "pub/sub mechanism" do
+    test "subscribe and receive updates", %{pid: pid} do
+      GenServerStore.subscribe(pid, "test_key")
+      GenServerStore.set(pid, "test_key", "initial_value")
+
+      assert_receive {:kv_update, "test_key", {:set, "initial_value"}}, 100
+
+      GenServerStore.set(pid, "test_key", "updated_value")
+      assert_receive {:kv_update, "test_key", {:set, "updated_value"}}, 100
+
+      GenServerStore.delete(pid, "test_key")
+      assert_receive {:kv_update, "test_key", :deleted}, 100
+    end
+
+    test "unsubscribe and stop receiving updates", %{pid: pid} do
+      GenServerStore.subscribe(pid, "unsub_key")
+      GenServerStore.set(pid, "unsub_key", "value1")
+      assert_receive {:kv_update, "unsub_key", {:set, "value1"}}, 100
+
+      GenServerStore.unsubscribe(pid, "unsub_key")
+      GenServerStore.set(pid, "unsub_key", "value2")
+      refute_receive {:kv_update, "unsub_key", _}, 100
+    end
+
+    test "receive expiration notification", %{pid: pid} do
+      GenServerStore.subscribe(pid, "expire_key")
+      GenServerStore.set(pid, "expire_key", "expiring_value", 100)
+      assert_receive {:kv_update, "expire_key", {:set, "expiring_value"}}, 100
+      assert_receive {:kv_update, "expire_key", :expired}, 200
+    end
+  end
+
+  describe "nested data structures" do
+    test "set and get nested data", %{pid: pid} do
+      GenServerStore.set_nested(pid, ["users", "123", "name"], "John Doe")
+      assert "John Doe" == GenServerStore.get_nested(pid, ["users", "123", "name"])
+    end
+
+    test "nested data with TTL", %{pid: pid} do
+      GenServerStore.set_nested(pid, ["temp", "data"], "expires soon", 100)
+      assert "expires soon" == GenServerStore.get_nested(pid, ["temp", "data"])
+      :timer.sleep(150)
+      assert nil == GenServerStore.get_nested(pid, ["temp", "data"])
+    end
+
+    test "update nested data", %{pid: pid} do
+      GenServerStore.set_nested(pid, ["config", "database", "url"], "localhost")
+      assert "localhost" == GenServerStore.get_nested(pid, ["config", "database", "url"])
+
+      GenServerStore.set_nested(pid, ["config", "database", "url"], "new_server")
+      assert "new_server" == GenServerStore.get_nested(pid, ["config", "database", "url"])
+    end
+
+    test "delete nested data", %{pid: pid} do
+      GenServerStore.set_nested(pid, ["to_delete", "nested", "key"], "value")
+      assert "value" == GenServerStore.get_nested(pid, ["to_delete", "nested", "key"])
+
+      GenServerStore.delete(pid, "to_delete")
+      assert nil == GenServerStore.get_nested(pid, ["to_delete", "nested", "key"])
+    end
+
+    test "nested data with pub/sub", %{pid: pid} do
+      GenServerStore.subscribe(pid, ["users", "456", "email"])
+      GenServerStore.set_nested(pid, ["users", "456", "email"], "user@example.com")
+
+      assert_receive {:kv_update, ["users", "456", "email"], {:set, "user@example.com"}}, 100
+
+      GenServerStore.set_nested(pid, ["users", "456", "email"], "newemail@example.com")
+      assert_receive {:kv_update, ["users", "456", "email"], {:set, "newemail@example.com"}}, 100
+    end
+  end
 end

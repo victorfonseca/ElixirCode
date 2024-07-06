@@ -341,12 +341,12 @@ defmodule AdvancedKvStore.GenServerStore do
     {:reply, :ok, new_state}
   end
 
-  def handle_call({:set_nested, keys, value, ttl}, _from, state) do
+  def handle_call({:set_nested, keys, value, ttl}, _from, state) when is_list(keys) do
     new_state = do_set_nested(keys, value, ttl, state)
     {:reply, :ok, new_state}
   end
 
-  def handle_call({:get_nested, keys}, _from, state) do
+  def handle_call({:get_nested, keys}, _from, state) when is_list(keys) do
     {result, new_state} = do_get_nested(keys, state)
     {:reply, result, new_state}
   end
@@ -461,8 +461,7 @@ defmodule AdvancedKvStore.GenServerStore do
     Logger.debug("Setting nested #{inspect(keys)} to #{inspect(value)} with TTL #{inspect(ttl)}")
 
     expiry = calculate_expiry(ttl)
-    new_data = put_in(state.data, keys ++ [:value], value)
-    new_data = put_in(new_data, keys ++ [:expiry], expiry)
+    new_data = set_nested_recursive(state.data, keys, %{value: value, expiry: expiry})
 
     timer_ref =
       if ttl != :infinity and ttl != :expired do
@@ -471,7 +470,7 @@ defmodule AdvancedKvStore.GenServerStore do
         nil
       end
 
-    new_timers = put_in(state.timers, keys, timer_ref)
+    new_timers = set_nested_recursive(state.timers, keys, timer_ref)
     new_state = %{state | data: new_data, timers: new_timers}
     save_state(new_state)
 
@@ -480,10 +479,18 @@ defmodule AdvancedKvStore.GenServerStore do
     new_state
   end
 
+  defp set_nested_recursive(data, [key], value) do
+    Map.put(data, key, value)
+  end
+
+  defp set_nested_recursive(data, [key | rest], value) do
+    Map.put(data, key, set_nested_recursive(Map.get(data, key, %{}), rest, value))
+  end
+
   defp do_get_nested(keys, state) do
     Logger.debug("Getting nested #{inspect(keys)}")
 
-    case get_in(state.data, keys) do
+    case get_nested_recursive(state.data, keys) do
       nil ->
         Logger.debug("#{inspect(keys)} not found")
         {nil, state}
@@ -498,7 +505,26 @@ defmodule AdvancedKvStore.GenServerStore do
           new_state = do_set_nested(keys, value, :expired, state)
           {nil, new_state}
         end
+
+      _ ->
+        Logger.debug("#{inspect(keys)} not found or invalid format")
+        {nil, state}
     end
+  end
+
+  defp get_nested_recursive(data, []) do
+    data
+  end
+
+  defp get_nested_recursive(data, [key | rest]) when is_map(data) do
+    case Map.get(data, key) do
+      nil -> nil
+      value -> get_nested_recursive(value, rest)
+    end
+  end
+
+  defp get_nested_recursive(_, _) do
+    nil
   end
 
   defp calculate_expiry(:infinity), do: :infinity
